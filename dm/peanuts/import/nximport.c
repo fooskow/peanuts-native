@@ -452,7 +452,7 @@ fail:
 }
 
 // ---------------------------------------------------------------- firmware fonts
-typedef struct FontJob { int got_std, got_ext; const char *out_dir; int found_ncas; int got_cjk[4]; } FontJob;   // got_cjk: cjk_sc, cjk_sc_ext, cjk_tc, cjk_kr (optional)
+typedef struct FontJob { int got_std, got_ext; const char *out_dir; int found_ncas; int got_cjk[4]; int unreadable, no_key, top_gen; char why[160]; } FontJob;   // PEANUTS (fork): unreadable .. why, what the error names when the fonts are missing   // got_cjk: cjk_sc, cjk_sc_ext, cjk_tc, cjk_kr (optional)
 // The firmware's Chinese and Korean shared fonts, written beside the two the app needs: a game set to one of those languages asks the console for them (types 1 to 4 of
 // the shared font service) and drew most characters as "?" with the standard font (Pokemon Shield with a Chinese save). FontKorean 0100000000000812 (one file),
 // FontChineseTraditional 0100000000000813 (one file), FontChineseSimple 0100000000000814 (the base file and an "ext" one). Not required: a firmware without them still gives the two
@@ -496,8 +496,10 @@ static int font_try_nca_fd(FontJob *fj, int fd, uint64_t off, uint64_t size) {
     NxContainer c; memset(&c, 0, sizeof c); c.fd = fd;
     NxEntry e; memset(&e, 0, sizeof e); snprintf(e.name, sizeof e.name, "nca"); e.off = off; e.size = size;
     NxNca n; fj->found_ncas++;
-    if (nx_nca_open(&n, &c, &e)) return 0;   // header didn't decrypt to NCA3/NCA2, or too small: not a readable NCA, skip quietly
+    if (nx_nca_open(&n, &c, &e)) { fj->unreadable++; return 0; }   // header didn't decrypt to NCA3/NCA2, or too small: not a readable NCA, skip quietly (counted for the error)
     int rc = 0;
+    if (n.key_gen > fj->top_gen) fj->top_gen = n.key_gen;   // PEANUTS (fork): the newest key generation the firmware uses, and why a font archive's key is missing
+    if (!n.key_ok) { fj->no_key++; if ((n.title_id == 0x0100000000000810ull || n.title_id == 0x0100000000000811ull) && !fj->why[0]) snprintf(fj->why, sizeof fj->why, "%s", n.key_why); }
     if (n.key_ok) font_try_cjk(fj, &n);
     if (n.key_ok && (n.title_id == 0x0100000000000810ull || n.title_id == 0x0100000000000811ull)) {
         int std = n.title_id == 0x0100000000000811ull;
@@ -590,15 +592,21 @@ static int font_scan_zip(FontJob *fj, const char *zip_path, const char *out_dir)
 
 int nximport_firmware_fonts(const char *firmware_dir, const char *out_dir) {
     if (!nx_keys.loaded) { nx_err("keys not loaded (nximport_keys)"); return -1; }
-    FontJob fj = { 0, 0, out_dir, 0, { 0, 0, 0, 0 } };
+    FontJob fj = { 0, 0, out_dir, 0, { 0, 0, 0, 0 }, 0, 0, 0, "" };
     struct stat st; if (stat(firmware_dir, &st)) { nx_err("cannot open %s: %s", firmware_dir, strerror(errno)); return -1; }
     if (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode)) { nx_err("%s is neither a folder nor a file", firmware_dir); return -1; }
     if (nx_mkdir(out_dir, 0755) && errno != EEXIST) { nx_err("cannot create %s: %s", out_dir, strerror(errno)); return -1; }
     int rc = S_ISDIR(st.st_mode) ? font_scan(&fj, firmware_dir, 0) : font_scan_zip(&fj, firmware_dir, out_dir);
     if (rc) return -1;
     if (!fj.got_std || !fj.got_ext) {
-        nx_err("%s: %s not found among %d NCAs (FontStandard 0100000000000811%s, FontNintendoExtended 0100000000000810%s)", firmware_dir,
-               fj.found_ncas ? "the shared font archives were" : "no NCA files", fj.found_ncas, fj.got_std ? " ok" : " missing", fj.got_ext ? " ok" : " missing");
+        // PEANUTS (fork): say why. A firmware newer than the keys has its system archives under a key generation prod.keys lacks (key_area_key_system_XX); a wrong
+        // header_key leaves no NCA readable at all
+        char more[400] = "";
+        if (fj.found_ncas && fj.unreadable == fj.found_ncas) snprintf(more, sizeof more, ": no NCA header decrypts with this prod.keys' header_key (keys from another console set, or not NCAs)");
+        else if (fj.why[0]) snprintf(more, sizeof more, ": the font archive's key is missing (%s); the firmware uses key generation %02x, so prod.keys must come from a console on this firmware or a newer one", fj.why, fj.top_gen);
+        else if (fj.no_key) snprintf(more, sizeof more, ": %d of %d NCAs have no key in prod.keys (the firmware's newest key generation is %02x)", fj.no_key, fj.found_ncas, fj.top_gen);
+        nx_err("%s: %s not found among %d NCAs (FontStandard 0100000000000811%s, FontNintendoExtended 0100000000000810%s)%s", firmware_dir,
+               fj.found_ncas ? "the shared font archives were" : "no NCA files", fj.found_ncas, fj.got_std ? " ok" : " missing", fj.got_ext ? " ok" : " missing", more);
         return -1;
     }
     return 0;
