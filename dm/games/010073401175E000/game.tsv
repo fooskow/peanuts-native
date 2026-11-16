@@ -32,6 +32,15 @@ zip_store	.mp4:.pak:.png:.psd:.metallib
 # itself and its dynamic resolution sizes the picture for a 60 fps frame. Unreal steps the game by the time that really passed. The launcher's frame rate cap (30) keeps the Switch's rate
 fps_target	60
 
+# ---- Power ----
+# PEANUTS (fork): the GPU clock. The Vulkan replay holds a floor under the GPU clock on Turnip through the kernel driver (dm/gfx/vk_android/vka_dev.c, the KGSL floor), at its default the
+# highest clock (DM_VK_GPU_FLOOR 100) for every frame's work, whatever the frame needs. DM_VK_GPU_FLOOR_AUTO=1 makes the floor follow the frame: it rises in steps when the frame's span comes
+# within 2 ms of the game's shortest period (16.7 ms at 60 fps) and falls when it stays 5 ms under it. Recommended on for this game so a frame with time to spare does not run at the
+# top clock (heat and battery); not measured on this game yet (the note's Open list). The player can turn it off in Game settings > Game options
+option	DM_VK_GPU_FLOOR_AUTO	Adaptive GPU clock	The GPU clock follows what each frame needs instead of staying at the top. Cooler and longer battery, turn off if frames drop	live
+# on by default for this game: the reason and what is measured are in README.md (Power)
+recommend	any	option.DM_VK_GPU_FLOOR_AUTO=on
+
 # ---- Memory ----
 # Unreal: nninitStartup reserves a 62 GB address region and its FMallocBinned3 takes 37 GB of it, so a 64 GB alias region for the bring-up on the Mac. The rewriter cuts the allocator in any Unreal 4 / 5 main (dm/tools/ue_malloc.py) and gives the region what the alias region has room for (dm/tools/ue_region.py), so an iPhone takes a smaller guest block, as Octopath Traveler 0's profile (docs/reference/memory.md)
 mem_reserve	0x1028000000

@@ -52,6 +52,12 @@ Every shader in them is an LZ4 block, which `uepak.py` decodes itself (`lz4_shad
 
 The game runs at 30 fps on the Switch with dynamic resolution. `fps_target 60` makes the host write three of the engine's console variables at every present (`dm/host/hle_fpslock.c`): `t.MaxFPS` 60, `rhi.SyncInterval` 1 and `r.DynamicRes.FrameTimeBudget` 16.17 ms (33.3 at a 30 cap). The budget is the frame time dynamic resolution sizes the picture for; left at 33.3 ms the engine would not lower the resolution for a frame that misses 16.7 ms. FPSLocker's entry for this build writes the same two values at the same addresses (`main+0x7b0deb0`, `+0x7ae3340`: each object's value pointer at +0x10). Unreal steps the game by the time that passed, so the speed stays right.
 
+## Power
+
+The Vulkan replay holds a floor under the GPU clock; on Turnip it goes through the kernel driver, and at its default (`DM_VK_GPU_FLOOR` 100) every frame's work runs at the highest clock, whatever the frame needs ([the floor's code and notes](../../gfx/vk_android/vka_dev.c)). The profile offers **Adaptive GPU clock** (Game settings > Game options, `DM_VK_GPU_FLOOR_AUTO`, live) and recommends it on for every phone (`recommend any`): the floor then rises in steps when a frame's span comes within 2 ms of the 16.7 ms period and falls when it stays 5 ms below it, so a frame with time to spare runs on the driver's own clock.
+
+Not measured on this game yet: the clock, the temperature and the frame times with it on and off (open, below). If frames drop with it on, turn it off for this game; the Frame rate cap's 30 (the in-game panel) halves the GPU work instead.
+
 ## Found on this game
 
 - [Pak version 9 and its frozen index](../../../docs/reference/shaders.md#pak-version-9-and-its-frozen-index)
@@ -61,5 +67,6 @@ The game runs at 30 fps on the Switch with dynamic resolution. `fps_target 60` m
 
 - Not packed or run from this profile: the shader translation of the 50,618 shaders, the pipeline list (`pso_manifest.tsv` is empty) and a run on the system driver and on Turnip.
 - The memory layout is the guess. With the allocator cut and the node area cut, the compact layout of the other Unreal 4 profiles (`mem_reserve 0xF0000000`, `mem_alias 0xC8000000`: [DRAGON QUEST III HD-2D Remake](../01003E601E324000/README.md)) may hold it; how far the engine region is mapped has not been measured.
+- Adaptive GPU clock (Power): temperature, GPU clock and frame times on the AYN Thor Max with it on and off, on Turnip and the system driver.
 - NVN keys other Unreal profiles set (`depth_mode`, `tex_dyn_slots`) are not checked for this game.
 - Slot 19 of FMallocBinned3's vtable matches the 4.26 / 4.27 layout; the other slots of 4.25's vtable were not compared one by one.
