@@ -65,8 +65,6 @@ jobs:
           "$SDKM" "platforms;android-36" "build-tools;36.0.0" "ndk;$NDK_VERSION" "cmake;3.22.1" > /dev/null
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"; echo "ANDROID_NDK_HOME=$SDK/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
           echo "sdk.dir=$SDK" > android/app/local.properties
-          # the fork's debug key, so a build installs over the one before it
-          mkdir -p "$HOME/.android" && cp peanuts/fork/debug.keystore "$HOME/.android/debug.keystore"
       - name: Versions
         run: |
           python3 --version; dotnet --version; java -version 2>&1 | head -1; cmake --version | head -1; zsh --version; ls "$ANDROID_NDK_HOME" | head -3
@@ -84,9 +82,28 @@ jobs:
         run: |
           set -o pipefail
           cd android/app
-          ./gradlew apk --console=plain -PnxApp=peanuts -PnxIdSuffix="$SUFFIX" -PnxLabel="Peanuts $SUFFIX" -PnxGames="$GAMES" -PnxPackStage="$W/stage" \
+          ./gradlew apk --console=plain -PnxApp=peanuts -PnxIdSuffix="$SUFFIX" -PnxLabel="Peanuts $SUFFIX" -PnxGames="$GAMES" -PnxPackStage="$W/stage" -PnxDebugStore="$GITHUB_WORKSPACE/peanuts/fork/debug.keystore" \
             -PnxVersionCode="$GITHUB_RUN_NUMBER" 2>&1 | tee "$W/gradle.log"
           ls -la out
+      - name: Same signing key as every earlier build
+        run: |
+          set -euo pipefail
+          # the signer certificate of the APK (v2/v3 signing block) must be the fork key's, or Android refuses to install the build over the one on the phone
+          want=$(keytool -exportcert -rfc -keystore peanuts/fork/debug.keystore -storepass android -alias androiddebugkey | openssl x509 -outform der | sha256sum | cut -c1-64)
+          got=$(python3 - android/app/out/nxnative-android-peanuts.apk <<'PY'
+          import hashlib, struct, sys
+          d = open(sys.argv[1], 'rb').read(); e = d.rfind(b'PK\x05\x06'); cd = struct.unpack_from('<I', d, e + 16)[0]
+          assert d[cd - 16:cd] == b'APK Sig Block 42', 'no APK signing block'
+          o = cd - struct.unpack_from('<Q', d, cd - 24)[0]
+          lp = lambda b, o: (b[o + 4:o + 4 + struct.unpack_from('<I', b, o)[0]], o + 4 + struct.unpack_from('<I', b, o)[0])
+          while o < cd - 24:
+              n, i = struct.unpack_from('<QI', d, o); v = d[o + 12:o + 8 + n]; o += 8 + n
+              if i == 0x7109871a:
+                  sg, _ = lp(v, 0); s1, _ = lp(sg, 0); sd, _ = lp(s1, 0); _, q = lp(sd, 0); cs, _ = lp(sd, q); c, _ = lp(cs, 0)
+                  print(hashlib.sha256(c).hexdigest()); break
+          PY
+          )
+          echo "signer $got, fork key $want"; [ "$got" = "$want" ]
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -302,6 +302,10 @@ android {
     }
     signingConfigs {
         if (nxLive || nxRelease) live { storeFile file(signStore); storePassword signPass; keyAlias signAlias; keyPassword signPass }   // PEANUTS: nxRelease too
+        // PEANUTS (fork): -PnxDebugStore=<keystore> signs the bring-up build with that key (alias androiddebugkey, password android) instead of the machine's
+        // own debug key, so builds made on different machines (the fork's CI runners: a fresh debug key each run) install over one another
+        def nxDebugStore = providers.gradleProperty('nxDebugStore').getOrElse('')
+        if (nxDebugStore) debug { storeFile file(nxDebugStore); storePassword 'android'; keyAlias 'androiddebugkey'; keyPassword 'android' }
     }
     buildTypes {
         debug { jniDebuggable true }
