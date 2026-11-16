@@ -73,7 +73,15 @@ static void check(int which) {
         *(uintptr_t *)(base + 0x7b32690 + 0x10) = (uintptr_t)(object + 16);
         f = (float *)object; f[0] = f[1] = 30;
         sync = (int32_t *)(object + 16); sync[0] = sync[1] = 2;
-    } else if (which == 14) {
+    } else if (which == 22) {   // PEANUTS: an Unreal main that registers r.DynamicRes.FrameTimeBudget too (Crash Bandicoot 4): the budget follows the frame limit
+        strcpy(g_mod[0].build_id, "0123456789abcdef0123456789abcdef");
+        cvar("r.DynamicRes.FrameTimeBudget", 0x7ae3330); cvar(DM_GAME_UE_FPS_CVAR, 0x7b0dea0); cvar("rhi.SyncInterval", 0x79c5030);
+        *(uintptr_t *)(base + 0x7ae3330 + 0x10) = (uintptr_t)(object + 32);
+        *(uintptr_t *)(base + 0x7b0dea0 + 0x10) = (uintptr_t)object;
+        *(uintptr_t *)(base + 0x79c5030 + 0x10) = (uintptr_t)(object + 16);
+        f = (float *)object; f[0] = f[1] = 30; f[8] = f[9] = 1000.0f / 30;
+        sync = (int32_t *)(object + 16); sync[0] = sync[1] = 2;
+} else if (which == 14) {
         strcpy(g_mod[0].build_id, "a48c0de3bc353efa0e4d359bde05ef24");
         *(uintptr_t *)(base + 0xda20e38) = (uintptr_t)object;
         double *d = (double *)(object + 8); d[0] = d[1] = 30;
@@ -95,9 +103,9 @@ static void check(int which) {
     }
     if (which == 17) setenv("DM_FPS_TARGET", "30", 1);
     if (which == 18) setenv("DM_FPS_TARGET", "0", 1);
-    if (which >= 20) { setenv("DM_FPS_TARGET", "0", 1); setenv("DM_FPS_DECOUPLE", "0", 1); setenv("DM_PRESENT_INTERVAL", "display", 1); setenv("DM_FPS_LIMIT", which == 20 ? "60" : "30", 1); g_gate_present = 0; }   // #207's start: Full game speed off, the host's tick, a pack without the gate
+    if (which >= 20 && which <= 21) { setenv("DM_FPS_TARGET", "0", 1); setenv("DM_FPS_DECOUPLE", "0", 1); setenv("DM_PRESENT_INTERVAL", "display", 1); setenv("DM_FPS_LIMIT", which == 20 ? "60" : "30", 1); g_gate_present = 0; }   // #207's start: Full game speed off, the host's tick, a pack without the gate
     if (which == 19) setenv("DM_FPS_TARGET", "15", 1);   // a saved cap the controller cannot hold (4 vsyncs, its maximum 3)
-    int engine = which != 3 && which != 12 && which < 17;   // 17-19: a floor does not fix the rate, so presentation keeps the game's interval   // a limiter the host writes: any but another build's main (3) and a main the rewriter found no Unreal variable in (12)
+    int engine = which != 3 && which != 12 && (which < 17 || which == 22);   // 17-19: a floor does not fix the rate, so presentation keeps the game's interval   // a limiter the host writes: any but another build's main (3) and a main the rewriter found no Unreal variable in (12)
     if (which & 1) assert(dm_fps_lock_engine() == engine);   // the graphics layer's present cap may ask before the first present (the acquire)
     dm_fps_lock_tick();
     assert(dm_fps_lock_engine() == engine);
@@ -117,6 +125,10 @@ static void check(int which) {
     }
     else if (which == 7) assert(fabsf(*f - (1000.0f / 60 - 0.5f)) < 0.001f && writes == 1);
     else if (which == 8) assert(f[0] == 60 && f[1] == 60 && sync[0] == 1 && sync[1] == 1 && writes == 4);
+    else if (which == 22) {
+        assert(f[0] == 60 && f[1] == 60 && sync[0] == 1 && sync[1] == 1 && fabsf(f[8] - (1000.0f / 60 - 0.5f)) < 0.001f && f[9] == f[8] && writes == 6);
+        dm_fps_target_set(30, "test"); dm_fps_lock_tick(); assert(f[0] == 30 && sync[0] == 2 && fabsf(f[8] - 1000.0f / 30) < 0.001f && f[9] == f[8]);
+    }
     else if (which == 9) {
         assert(sync[0] == 1 && sync[1] == 1 && writes == 2);
         dm_fps_lock_tick(); assert(writes == 2);
@@ -288,7 +300,7 @@ int main(void) {
     sead_rate_check();
     { pid_t p = fork(); assert(p >= 0); if (!p) { step_check(); _exit(0); } int status; assert(waitpid(p, &status, 0) == p); assert(WIFEXITED(status) && WEXITSTATUS(status) == 0); }
     // Each process starts the production one-time initialization with a fresh build and target.
-    for (int i = 0; i < 22; i++) {
+    for (int i = 0; i < 23; i++) {
         pid_t p = fork(); assert(p >= 0);
         if (!p) { check(i); _exit(0); }
         int status; assert(waitpid(p, &status, 0) == p); assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);

@@ -1813,6 +1813,16 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix (explicit diagnostic adaptation):** on the build host, `scripts/optimize_android_shader.py source.lib destination.lib --key <compute-key>` runs SPIRV-Tools `--redundancy-elimination --simplify-instructions` on every variant of the selected compute entry. It validates the input and output for Vulkan 1.3, preserves the library's ABI, entry metadata, bindings, constants and all other entries, and publishes a new library without overwriting an existing file. Requires `spirv-opt`, `spirv-val` and Python `zstandard`. Select it through `DM_VK_SHLIB`; the source library remains available for A/B. The pair of passes succeeds where each alone fails in the observed case. This is a workaround for the closed compiler, not a diagnosed compiler fix or an automatic policy for other shaders. Module validation and pipeline creation alone do not establish gameplay correctness.
 - **Found on:** [Ocarina of Time](../../dm/games/0400486024DEC000/README.md#found-on-this-game), Foliage compute on Adreno 830.
 
+### Pak version 9 and its frozen index
+
+<!-- PEANUTS: found on a Peanuts-only profile -->
+
+- **Symptom:** the shader split of an Unreal Engine 4.25 game finds `shaders: 0` and says the game keeps its shaders in a form it does not read; no line names the paks. `uepak.py list` on one says `no pak footer`.
+- **Cause:** `uepak.py` read pak versions 4 and 11 only. Version 9 (Unreal Engine 4.25) has version 11's footer with one byte more, the frozen-index flag after the SHA-1, so its magic is 0xcd bytes from the end, where `magic_back` did not look; the pak then counted as no Unreal pak and was skipped without a line. With the flag set the index is not serialized: it is a memory image of the engine's own tables (frozen pointers of offset << 1 | 1, a `TMap` of directories to `TMap`s of file names to indices into an array of 0x50-byte entries). `uepak.py`'s header gives the layout.
+- **Fix:** `uepak.py` reads version 9 (`V9`, `frozen_index`): the footer, a frozen index with every pointer checked to lie inside it, and an index that is not frozen (the per-file layout with the method as an index into the footer's names). A game split over several version 9 paks keeps its shared material shaders in the archives of one of them, so a version 9 pak in the same folder as one with archives is not scanned file by file (`inline_paks`).
+- **Found on:** [Crash Bandicoot 4: It's About Time](../../dm/games/010073401175E000/README.md): both paks are version 9 with a frozen index; the two archives are in `pakchunk0`, every shader an LZ4 block.
+- **Check:** `dm/tools/tests/test_uepak_v9.py` (synthetic paks: a frozen index and one that is not, stored and Zlib files, a pointer that leaves the index, the pak beside the one with archives).
+
 ## Optional page candidates for compute-mesh raw loads
 
 - **Symptom:** cached raw-load helpers still enter a full pool-table search on cold words whose pools cover no complete 2 MiB hint chunk.

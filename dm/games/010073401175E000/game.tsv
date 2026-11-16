@@ -1,0 +1,47 @@
+# Game profile of Crash Bandicoot 4: It's About Time (Switch, update 1.2 = v131072)
+# Format: see dm/games/README.md
+# PEANUTS: a Peanuts Native profile (Banana Native has none for this title); whole file Peanuts' own
+# Toys for Bob, Unreal Engine 4.25 (project name Lava), SDK 10.4.0, NVN, Wwise sound; subsdk0 is the movie module (NintendoSDK_movie).
+# The shaders are in two shader code archives (ShaderArchive-Global-GLSL_SWITCH, ShaderArchive-Lava-GLSL_SWITCH) in pakchunk0-Switch.pak, a version 9 pak with a frozen index
+# (dm/gfx/tools/uepak.py V9); every shader in them is an LZ4 block, decoded without the game's code.
+# Status: provisional profile (dm/games/profile_guess.py from the survey), not run on a device from this profile yet; see README.md
+
+# ---- Identity ----
+title_id	010073401175E000
+program_id	010073401175E000
+
+# ---- App ----
+name	Crash Bandicoot 4: It's About Time
+ipa	CrashBandicoot4.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v131072	1.2	main=e8db38f170b0149d7040d492e66825b3	subsdk0=2c35246689bc9c3d21b19cebedd74646	sdk=204eaef83fe5e5617d0787c8ef01a080
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Lava/Content/Paks/pakchunk1-Switch.pak
+zip_store	.mp4:.pak:.png:.psd:.metallib
+
+# ---- Graphics ----
+# 60 fps (30 on the Switch): the game's config caps Unreal at 30. The host writes 60 into t.MaxFPS, 1 into rhi.SyncInterval and the frame time into r.DynamicRes.FrameTimeBudget
+# (hle_fpslock.c; the rewriter finds the three variables by name, dm/tools/ue_cvar.py: main+0x7b0dea0, +0x79c5030, +0x7ae3330 in this build), so the game asks for present interval 1
+# itself and its dynamic resolution sizes the picture for a 60 fps frame. Unreal steps the game by the time that really passed. The launcher's frame rate cap (30) keeps the Switch's rate
+fps_target	60
+
+# ---- Memory ----
+# Unreal: nninitStartup reserves a 62 GB address region and its FMallocBinned3 takes 37 GB of it, so a 64 GB alias region for the bring-up on the Mac. The rewriter cuts the allocator in any Unreal 4 / 5 main (dm/tools/ue_malloc.py) and gives the region what the alias region has room for (dm/tools/ue_region.py), so an iPhone takes a smaller guest block, as Octopath Traveler 0's profile (docs/reference/memory.md)
+mem_reserve	0x1028000000
+mem_alias	0x1000000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 80 MB of system resource
+sys_resource	0x5000000
+
+# ---- Shader split ----
+# the decoded shader code archives: the engine's global shaders and the game's material shaders
+shader_groups	ShaderArchive-Global-=global ShaderArchive-=game
+shader_note	Crash Bandicoot 4 shaders

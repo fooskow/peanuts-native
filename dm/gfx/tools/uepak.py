@@ -161,7 +161,7 @@ def magic_back(f):
     """(how far from the end the footer's magic is, the pak version): a legacy footer is the last 0x2d bytes (magic 0x2c from the end); version 11's magic is 0xc8 from the end in
     Octopath Traveler 0 (UE5) and 0xcc in Unreal Engine 4.27 (DRAGON QUEST VII Reimagined: five whole 32-byte compression method names after the SHA-1)"""
     size = f.seek(0, 2)
-    for back, foot in ((0x2c, 0x2d), (0xc8, 0xc8 + 21), (0xcc, 0xcc + 21)):
+    for back, foot in ((0x2c, 0x2d), (0xc8, 0xc8 + 21), (0xcc, 0xcc + 21), (0xcd, 0xcd + 21)):   # PEANUTS: 0xcd, version 9 (UE 4.25: the frozen-index flag after the SHA-1)
         if size < foot: continue   # shorter than this footer
         f.seek(-back, 2); m, ver = struct.unpack('<II', f.read(8))
         if m == PAK_MAGIC: return back, ver
@@ -170,6 +170,63 @@ def magic_back(f):
 def pak_version(f):
     return magic_back(f)[1]
 
+# PEANUTS: pak version 9 (Unreal Engine 4.25). Crash Bandicoot 4: It's About Time (Lava/Content/Paks/pakchunk0-Switch.pak 3.2 GB / 54,043 files, pakchunk1-Switch.pak 4.9 GB / 73,694 files,
+#   Zlib in 64 KB blocks, index not encrypted) writes its index frozen: a memory image of the engine's FPakFile data rather than a serialized one. Its layout (64-bit, little endian):
+#   a frozen pointer is an i64 holding (offset from the pointer's own position << 1) | 1, 0 for none; FString and TArray are {pointer, i32 num, i32 max}, an FString's num counting its NUL
+#   (UTF-16). The index is {FString mount point, TArray<FPakEntry> files, TMap<FString directory, TMap<FString file, i32 index into files>>}; a TMap (TSet) is 0x38 bytes: elements TArray, the
+#   allocation flags TBitArray {pointer, i32 bits, i32 max}, i32 first free, i32 free count, hash pointer, i32 hash size + 4 padding. A directory element is 0x50 bytes (FString, TMap, i32 hash next,
+#   i32 hash index), a file element 0x20 (FString, i32 index + 4, i32 hash next, i32 hash index). A frozen FPakEntry is 0x50 bytes: i64 offset, i64 stored size, i64 raw size, SHA-1 (20) + 4,
+#   TArray<{i64 start, i64 end}> blocks (from the entry's offset), u32 compression block size, u32 compression method (1-based into the footer's names, 0 = stored), u8 flags (1 = encrypted).
+#   The FPakEntry repeated in front of each file's data is the serialized one, 53 bytes (+ 4 + 16 per block when compressed), as in version 11.
+#   A version 9 pak whose index is not frozen keeps the legacy per-file index, with the compression method as a 1-based index into the footer's names.
+V9 = 9
+
+def index_frozen(f):
+    """Whether a version 9 pak's index is a frozen memory image (bIndexIsFrozen, the byte after the footer's SHA-1)"""
+    back, ver = magic_back(f)
+    if ver != V9: return False
+    f.seek(-back + 8 + 8 + 8 + 20, 2); return f.read(1)[0] != 0
+
+def frozen_index(b, what):
+    """(mount point, {path relative to it: index into the entries}, entry(index) → (offset, stored size, raw size, method number, [(block start, length)], block size, encrypted)) of a frozen
+    version 9 index (see V9); every pointer is checked to lie inside the index"""
+    def ptr(o):
+        v = R(b, o, what).take('<q')
+        if v == 0: return None
+        if not v & 1: raise ValueError(f'{what}: {v:#x} at {o:#x} is not a frozen pointer')
+        p = o + (v >> 1)
+        if not 0 <= p <= len(b): raise ValueError(f'{what}: the pointer at {o:#x} leaves the index')
+        return p
+    def fstr(o):
+        p, (n, _) = ptr(o), R(b, o + 8, what).take('<ii')
+        if not p or n <= 0: return ''
+        R(b, p, what).need(2 * n); return b[p:p + 2 * (n - 1)].decode('utf-16-le')
+    def elements(o, size):
+        p, (n, _) = ptr(o), R(b, o + 8, what).take('<ii')
+        fp, (nb, _) = ptr(o + 16), R(b, o + 24, what).take('<ii')
+        if n and p is None: raise ValueError(f'{what}: a map of {n} elements without its elements')
+        R(b, p or 0, what).need(size * n)
+        flags = R(b, fp, what).raw((nb + 7) // 8) if fp else b''
+        for i in range(n):
+            if not flags or flags[i >> 3] >> (i & 7) & 1: yield p + i * size
+    fp, (nf, _) = ptr(0x10), R(b, 0x18, what).take('<ii')
+    R(b, fp or 0, what).need(0x50 * nf)
+    files = {}
+    for de in elements(0x20, 0x50):
+        dn = fstr(de)
+        for fe in elements(de + 16, 0x20):
+            i = R(b, fe + 16, what).take('<i')
+            if not 0 <= i < nf: raise ValueError(f'{what}: file index {i} of {nf}')
+            files[(dn + fstr(fe)).lstrip('/')] = i
+    def entry(i):
+        o = fp + 0x50 * i; r = R(b, o, what)
+        off, size, raw = r.take('<qqq')
+        bp, (nblk, _) = ptr(o + 0x30), R(b, o + 0x38, what).take('<ii')
+        bsz, meth = R(b, o + 0x40, what).take('<II'); fl = b[o + 0x48]
+        blocks = [R(b, bp + 16 * k, what).take('<qq') for k in range(nblk)] if bp and nblk else []
+        return off, size, raw, meth, [(s, t - s) for s, t in blocks], bsz, fl & 1
+    return fstr(0), files, entry
+
 def footer(f):
     """(encrypted index, index offset, index size, compression method names by number from 1, version); ValueError when the index does not lie inside the file"""
     back, ver = magic_back(f)
@@ -177,7 +234,12 @@ def footer(f):
     if ver in LEGACY:
         f.seek(-0x2d, 2); ft = f.read(0x2d); ioff, isz = struct.unpack_from('<QQ', ft, 9)
         enc, methods = ft[0], [LEGACY_METHODS.get(i, f'flags {i}') for i in range(1, 8)]
-    elif ver != 11: raise ValueError(f'pak version {ver}, only {", ".join(map(str, LEGACY))} and 11 are read')
+    elif ver == V9:   # PEANUTS: version 9 (UE 4.25, Crash Bandicoot 4): as version 11's footer with one byte more, bIndexIsFrozen, between the SHA-1 and the method names
+        if back != 0xcd: raise ValueError(f'a version 9 pak footer with its magic {back:#x} bytes from the end, where that version has it 0xcd from the end')
+        f.seek(-(back + 21), 2); ft = f.read(back + 21); k = 21
+        ioff, isz = struct.unpack_from('<QQ', ft, k + 8)
+        enc, methods = ft[k - 1], [ft[k + 45 + 32 * i:k + 77 + 32 * i].rstrip(b'\0').decode('latin1') for i in range(5)]
+    elif ver != 11: raise ValueError(f'pak version {ver}, only {", ".join(map(str, LEGACY))}, 9 and 11 are read')
     else:
         f.seek(-(back + 21), 2); ft = f.read(back + 21); k = 21
         ioff, isz = struct.unpack_from('<QQ', ft, k + 8)
@@ -231,8 +293,26 @@ class Pak:
         self.path, self.key = path, key; self.f = open(path, 'rb')
         enc, ioff, isz, self.methods, self.version = footer(self.f)
         if enc and not key: raise ValueError(f'{path}: the index is encrypted and no key was given')
-        r = R(self.read_at(ioff, isz, enc), what=f'{path}: the index')
+        idx = self.read_at(ioff, isz, enc)
+        if self.version == V9 and index_frozen(self.f):   # PEANUTS: a frozen version 9 index (V9)
+            self.mount, names, entry = frozen_index(idx, f'{path}: the frozen index'); self.files = {}
+            for name, i in names.items():
+                off, size, raw, meth, blocks, bsz, e = entry(i)
+                if meth > len(self.methods) or meth and not self.methods[meth - 1]: raise ValueError(f'{path}: {name} names compression method {meth}, which the footer does not')
+                self.files[name] = dict(off=off, raw=raw, size=size, method=self.methods[meth - 1] if meth else '', encrypted=e, block_size=bsz or raw, blocks=blocks or [(53, size)])
+            self.count = len(self.files); return
+        r = R(idx, what=f'{path}: the index')
         self.mount = r.fstr(); self.count = r.take('<i')
+        if self.version == V9:   # PEANUTS: a version 9 index that is not frozen: the legacy per-file layout, the method a 1-based index into the footer's names
+            self.files = {}
+            for _ in range(self.count):
+                name = r.fstr(); off, size, raw, meth = r.take('<qqqI'); r.raw(20)
+                blocks = [r.take('<qq') for _ in range(r.take('<i'))] if meth else []
+                e, bsz = r.take('<BI'); head = 53 + (4 + 16 * len(blocks) if meth else 0)
+                if meth > len(self.methods) or meth and not self.methods[meth - 1]: raise ValueError(f'{path}: {name} names compression method {meth}, which the footer does not')
+                self.files[name] = dict(off=off, raw=raw, size=size, method=self.methods[meth - 1] if meth else '', encrypted=e, block_size=bsz,
+                                        blocks=[(s, t - s) for s, t in blocks] or [(head, size)])
+            return
         if self.version in LEGACY:   # one FPakEntry per file, kept as parsed
             self.files = {}
             for _ in range(self.count):
@@ -258,7 +338,7 @@ class Pak:
         b = read_range(self.f, off, (n + 15) & ~15 if enc else n, self.path)
         return aes_decrypt(self.key, b)[:n] if enc else b
     def entry(self, path):
-        if self.version in LEGACY: return self.files[path]
+        if self.version in LEGACY or self.version == V9: return self.files[path]
         r = R(self.enc, self.files[path], what=f'{self.path}: the entry of {path}'); v = r.take('<I')
         bsz = (v & 0x3f) << 11
         if v & 0x3f == 0x3f: bsz = r.take('<I')
@@ -482,6 +562,10 @@ def inline_shaders(path):
         enc, ioff, isz, _, ver = footer(f)
         if ver in LEGACY: return True
         if enc: return False
+    if ver == V9:   # PEANUTS: version 9 (V9): read its whole index, frozen or not; inline when it names cooked packages and no shader code archive
+        pk = Pak(path); names = pk.files; pk.f.close()
+        return not any(n.endswith('.ushaderbytecode') for n in names) and any(n.endswith('.uexp') for n in names)
+    with open(path, 'rb') as f:
         r = R(read_range(f, ioff, isz, path), what=f'{path}: the index'); r.fstr(); r.take('<iQ')
         if r.take('<i'): r.take('<QQ'); r.raw(20)
         if not r.take('<i'): return False
@@ -491,12 +575,25 @@ def inline_shaders(path):
 def unreal_paks(romfs, inline=None):
     """The paks under the RomFS that Unreal wrote (its magic in the footer; inline None = any, True = those whose shaders are inline in the cooked packages, False = the others, inline_shaders):
     the NSP script decodes the shader code archives of the others (decode_ue_shaders); shader_split.py reads the inline ones file by file (ue_legacy_jobs)"""
-    out = []
-    for p in paks(romfs):
-        try: inl = inline_shaders(p)
+    kinds = inline_paks(paks(romfs))
+    return [p for p, inl in kinds.items() if inline is None or inl == inline]
+
+_INLINE = {}   # (pak path, its size) → inline_shaders
+def inline_paks(paths):
+    """{pak: whether its shaders are inline (inline_shaders)} of the Unreal paks among paths, in their order; files that are no Unreal pak are left out.
+    PEANUTS: a version 9 game split over several paks (Crash Bandicoot 4: both shader code archives in pakchunk0, cooked packages only in pakchunk1) shares its material shaders through
+    those archives, so a version 9 pak in the same folder as one that holds them has no inline shaders. Scanning its 4.9 GB (13.5 GB decoded) file by file finds none: the only LSLG
+    magics in it are 8 chance matches in texture and mesh data"""
+    found = []
+    for p in paths:
+        try:
+            with open(p, 'rb') as f: ver, size = pak_version(f), f.seek(0, 2)
+            if (p, size) not in _INLINE: _INLINE[(p, size)] = inline_shaders(p)   # kept: a version 9 index is read whole (Crash Bandicoot 4: 127,737 names), and the split asks several times
+            inl = _INLINE[(p, size)]
         except (OSError, ValueError, struct.error): continue   # shorter than a footer, or no Unreal pak
-        if inline is None or inl == inline: out.append(p)
-    return out
+        found.append((p, inl, ver))
+    shared = {os.path.dirname(p) for p, inl, ver in found if ver == V9 and not inl}
+    return {p: inl and not (ver == V9 and os.path.dirname(p) in shared) for p, inl, ver in found}
 
 def job(romfs, main_nso, work, decode=None):
     """The shader code archives of every pak under the RomFS into <work>/archives, and one Oodle job (<work>/oodle.job) of every compressed shader in them; <work>/job.json lists them.

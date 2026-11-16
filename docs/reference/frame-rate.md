@@ -170,6 +170,16 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Found on:** [Octopath Traveler 0](../../dm/games/01005270232F2000/README.md), [OCTOPATH TRAVELER II](../../dm/games/0100A3501946E000/README.md), [DRAGON QUEST VII Reimagined](../../dm/games/0100A9D01C446000/README.md), [DRAGON QUEST XI S](../../dm/games/01006C300E9F0000/README.md), [SHIN MEGAMI TENSEI V: Vengeance](../../dm/games/010069C01AB82000/README.md), [FINAL FANTASY RESONANCE](../../dm/games/0100606026F12000/README.md) and its [Asian release](../../dm/games/0100B8A026F14000/README.md), which had 13 rows of fixed addresses until 2026-10-30. Checked offline on 61 mains: it finds exactly those rows' objects in the six on the drives (DRAGON QUEST XI S and SHIN MEGAMI TENSEI V: Vengeance from the archive drive), including DRAGON QUEST XI S's `t.MaxFPS` constructor, which the host's earlier run-time search (`dm_ue_cvar`) passed over to the next variable's registration; nothing in a game that is not Unreal. Open: [OCTOPATH TRAVELER](../../dm/games/010057D006492000/README.md)'s inlined constructors keep a page base in `x22` from far before the name and store the value pointer at an offset from it (`str x0, [x22, #0x5e8]`), a form the search does not follow: its variables are not found (no write, no red line without a target).
 - **Check:** `dm/tools/tests/test_ue_cvar.py` (synthetic code: the constructor form with the object loaded first, the register form with a base constructor between, a lookup, a double registration, UTF-32 names); `t_fpslock` (the rows from main's table, a present interval alone, a main without variables); `ue_cvar.py <main>...` prints what it finds in each.
 
+### Unreal's dynamic resolution kept the 30 fps frame time at 60
+
+<!-- PEANUTS: found on a Peanuts-only profile -->
+
+- **Symptom:** (expected from the engine's code, not measured here yet) an Unreal Engine game with dynamic resolution, raised to 60 fps by `fps_target`, drops frames in heavy scenes while its resolution stays high: the engine does not lower it for a frame that takes 20 ms.
+- **Cause:** `r.DynamicRes.FrameTimeBudget`, the frame time in milliseconds the engine sizes the picture for, stays at the game's 33.3 when the host raises only `t.MaxFPS` and the present interval. A frame under 33.3 ms of GPU time counts as within budget.
+- **Fix:** `dm/tools/ue_cvar.py` finds the variable by its registered name with the others, and `hle_fpslock.c` (`ue_rows`) writes the target's frame time into both of its copies with the frame limit: 16.17 ms at 60 (the limiters' 0.5 ms margin), 33.3 at 30, the game's own value back when the cap is given up. A main that does not register the variable gets no row.
+- **Found on:** [Crash Bandicoot 4: It's About Time](../../dm/games/010073401175E000/README.md): the variable is at `main+0x7ae3330`; FPSLocker's entry for the build writes the same value there. Not measured on a device yet (open in the note).
+- **Check:** `t_fpslock` (case 22: the three variables at 60, then at a 30 cap); `ue_cvar.py <main>` prints the object.
+
 ### Frostbite's simulation rate, found by name
 
 - **Symptom:** a Frostbite game holds 30 fps with spare CPU and GPU time. Raising only the frame limit and the present interval gives 60 frames a second with the game at half speed (the match clock at 3.6 game seconds a second instead of 7.5).

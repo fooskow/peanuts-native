@@ -1,0 +1,112 @@
+# PEANUTS (fork): builds the Peanuts Native APK on a GitHub-hosted Linux runner and publishes it as a release of this fork, so it can be downloaded on the handheld.
+# The APK is a test app beside the release (application id dev.nxnative.android.peanuts.<suffix>, peanuts/docs/NEW-GAME.md step 6) with the real on-device
+# packer (peanuts/scripts/ondevice-stage.sh), signed with the fork's debug key (peanuts/fork/debug.keystore: public, so every build installs over the last one).
+# No game file, key or firmware is used or published: the APK holds the profiles of the games named below and the tools.
+name: fork-apk
+
+on:
+  push:
+    branches: [crash4]
+  workflow_dispatch:
+    inputs:
+      games:
+        description: 'Title IDs in the APK, comma-separated (each needs dm/games/<id>)'
+        default: '010073401175E000'
+      suffix:
+        description: 'Application id suffix (lower-case letters and digits)'
+        default: 'crash'
+
+permissions:
+  contents: write   # the release
+
+concurrency:
+  group: fork-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GAMES: ${{ inputs.games || '010073401175E000' }}
+  SUFFIX: ${{ inputs.suffix || 'crash' }}
+  NDK_VERSION: 28.2.13676358
+  W: ${{ github.workspace }}/../fork-apk-work   # the stage's downloads and build files, outside the repository
+
+jobs:
+  apk:
+    name: Peanuts Native APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+      - name: Tools (zsh, ninja, Python packages, .NET 10 SDK, JDK 21, Android SDK and NDK)
+        run: |
+          set -euo pipefail
+          mkdir -p "$W" && echo "W=$(cd "$W" && pwd)" >> "$GITHUB_ENV"
+          sudo apt-get update -qq && sudo apt-get install -y -qq zsh ninja-build cmake libdigest-sha-perl > /dev/null
+          python -m pip install -q lz4 "capstone>=5,<6" fonttools
+          # .NET 10 SDK (the translator, NativeAOT for bionic): the image's own when it has one, else Microsoft's install script
+          if ! dotnet --list-sdks 2>/dev/null | grep -q '^10\.'; then
+            curl -sSfL https://dot.net/v1/dotnet-install.sh -o "$RUNNER_TEMP/dotnet-install.sh"
+            bash "$RUNNER_TEMP/dotnet-install.sh" --channel 10.0 --install-dir "$HOME/.dotnet" > /dev/null
+            echo "$HOME/.dotnet" >> "$GITHUB_PATH"; echo "DOTNET_ROOT=$HOME/.dotnet" >> "$GITHUB_ENV"
+          fi
+          # JDK 21 for the Gradle wrapper (8.14): the image's
+          if [ -n "${JAVA_HOME_21_X64:-}" ]; then echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"; echo "$JAVA_HOME_21_X64/bin" >> "$GITHUB_PATH"; fi
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKM="$(ls "$SDK"/cmdline-tools/*/bin/sdkmanager | tail -1)"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-36" "build-tools;36.0.0" "ndk;$NDK_VERSION" "cmake;3.22.1" > /dev/null
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"; echo "ANDROID_NDK_HOME=$SDK/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "sdk.dir=$SDK" > android/app/local.properties
+          # the fork's debug key, so a build installs over the one before it
+          mkdir -p "$HOME/.android" && cp peanuts/fork/debug.keystore "$HOME/.android/debug.keystore"
+      - name: Versions
+        run: |
+          python3 --version; dotnet --version; java -version 2>&1 | head -1; cmake --version | head -1; zsh --version; ls "$ANDROID_NDK_HOME" | head -3
+      - name: Checks (the profiles, the Unreal pak reader, the docs index)
+        run: |
+          set -euo pipefail
+          sh peanuts/scripts/check-profiles.sh $(echo "$GAMES" | tr ',' ' ')
+          python3 dm/tools/tests/test_uepak_v9.py
+          python3 dm/tools/tests/test_ue_cvar.py
+      - name: On-device packer stage (CPython, Capstone, lz4, the translator, SPIRV-Tools)
+        run: |
+          set -o pipefail
+          zsh peanuts/scripts/ondevice-stage.sh "$W" all 2>&1 | tee "$W/stage.log"
+      - name: APK
+        run: |
+          set -o pipefail
+          cd android/app
+          ./gradlew apk --console=plain -PnxApp=peanuts -PnxIdSuffix="$SUFFIX" -PnxLabel="Peanuts $SUFFIX" -PnxGames="$GAMES" -PnxPackStage="$W/stage" \
+            -PnxVersionCode="$GITHUB_RUN_NUMBER" 2>&1 | tee "$W/gradle.log"
+          ls -la out
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="fork-apk-$GITHUB_RUN_NUMBER"; APK="peanuts-native-$SUFFIX-$GITHUB_RUN_NUMBER.apk"
+          cp android/app/out/nxnative-android-peanuts.apk "$RUNNER_TEMP/$APK"
+          {
+            echo "Peanuts Native test build from \`${GITHUB_SHA::12}\` (branch \`$GITHUB_REF_NAME\`)."
+            echo
+            echo "- Games in this APK: \`$GAMES\`"
+            echo "- Application id: \`dev.nxnative.android.peanuts.$SUFFIX\` (installs beside the release app; its settings, keys and firmware are its own)"
+            echo "- Signed with the fork's public debug key. Contains no game file, key or firmware."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" "$RUNNER_TEMP/$APK" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Peanuts Native $SUFFIX build $GITHUB_RUN_NUMBER" --notes-file "$RUNNER_TEMP/notes.md"
+      - name: What failed (the end of each log, as annotations)
+        if: failure()
+        run: |
+          for f in "$W/stage.log" "$W/xlate.log" "$W/spvtools.log" "$W/gradle.log"; do
+            [ -f "$f" ] || continue
+            body="$(grep -v '^\s*$' "$f" | tail -n 45 | cut -c1-400 | sed -e 's/%/%25/g' | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n/%0A/g')"
+            echo "::error title=$(basename "$f")::$body"
+          done

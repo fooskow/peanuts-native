@@ -301,21 +301,26 @@ static int target_row(const module_t *m, lock_t *out) {
 
 // The Unreal rows of this main: the profile's frame-limit variable and the present intervals, at the objects the rewriter found (0 rows: not an Unreal main). *missing: an Unreal main
 // (the rewriter found some of its variables) without the profile's frame-limit variable
+#define UE_ROWS 4   // PEANUTS: was 3 (the frame limit and the two present intervals); the dynamic resolution budget is the fourth
 static int ue_rows(const module_t *m, lock_t *out, int *missing) {
-    static char what[3][48]; int n = 0, have = 0;
-    for (int k = 0; k < m->n_ue_cvar && n < 3; k++) {
-        const char *name = m->ue_cvar[k].name; int fps = !strcmp(name, DM_GAME_UE_FPS_CVAR);
-        if (!fps && strcmp(name, "rhi.SyncInterval") && strcmp(name, "nvn.SyncInterval")) continue;
+    // PEANUTS: r.DynamicRes.FrameTimeBudget too, where the game registers it: the frame time in milliseconds that Unreal's dynamic resolution sizes the picture for (33.3 in a game
+    // made for 30 fps). Left at the game's value with the frame limit raised to 60, the engine kept sizing each frame for 33.3 ms of GPU time and never lowered the resolution for
+    // frames that missed 16.7 ms (Crash Bandicoot 4, whose FPSLocker entry writes the same two variables). MS_F32: the target's frame time, at 60 with the limiters' margin
+    static char what[UE_ROWS][48]; int n = 0, have = 0;
+    for (int k = 0; k < m->n_ue_cvar && n < UE_ROWS; k++) {
+        const char *name = m->ue_cvar[k].name; int fps = !strcmp(name, DM_GAME_UE_FPS_CVAR), budget = !fps && !strcmp(name, "r.DynamicRes.FrameTimeBudget");
+        if (!fps && !budget && strcmp(name, "rhi.SyncInterval") && strcmp(name, "nvn.SyncInterval")) continue;
         have |= fps; snprintf(what[n], sizeof what[n], "Unreal %s", name);
-        out[n] = (lock_t){ "", what[n], m->ue_cvar[k].off + 0x10, 0, fps ? FPS_F32 : VSYNCS_I32, 2, 0 }; n++;
+        out[n] = (lock_t){ "", what[n], m->ue_cvar[k].off + 0x10, 0, fps ? FPS_F32 : budget ? MS_F32 : VSYNCS_I32, 2, 0 }; n++;
     }
+    if (!have) for (int k = 0; k < n; k++) if (out[k].kind == MS_F32) { out[k] = out[--n]; break; }   // PEANUTS: the budget only follows a frame limit the host writes: alone it paces nothing, and its row would count as a limiter
     *missing = m->n_ue_cvar > 0 && !have;
     return n;
 }
 
 // The running main's engine limiters, found once: by the first present (dm_fps_lock_tick) or by the graphics layer's present cap, which may ask first (dm_fps_lock_engine, from the acquire)
-#define NROWS (NLOCKS + 4 + NSTEPS)
-static lock_t ue[3], target_lock, steps[NSTEPS > 0 ? NSTEPS : 1]; static const lock_t *rows[NROWS]; static int nrow, nier, ue_missing; static uint8_t *base; static uint32_t display;
+#define NROWS (NLOCKS + UE_ROWS + 1 + NSTEPS)
+static lock_t ue[UE_ROWS], target_lock, steps[NSTEPS > 0 ? NSTEPS : 1]; static const lock_t *rows[NROWS]; static int nrow, nier, ue_missing; static uint8_t *base; static uint32_t display;
 static pthread_once_t g_found = PTHREAD_ONCE_INIT;
 static void lock_find(void) {
     for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) {
