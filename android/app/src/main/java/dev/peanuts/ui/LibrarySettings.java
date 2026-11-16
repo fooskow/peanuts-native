@@ -279,8 +279,24 @@ public final class LibrarySettings {
             int r = imp.firmwareFonts(source, out.getPath());
             String err = imp.lastError();
             if (deleteAfter != null) deleteAfter.delete();
-            UI.post(() -> { fontsState = r == 0 ? null : "Firmware not added: " + err; fontsLanded(a); });
+            UI.post(() -> { fontsState = r == 0 ? null : "Firmware not added: " + err; fontsLanded(a); if (r != 0) showFirmwareError(a, err); });
         }, "peanuts-fonts").start();
+    }
+
+    /** PEANUTS (fork): the whole reason in a dialog, with Copy. The settings row shows one line only, and the importer's reason (the missing key, the firmware's key
+     * generation) comes at the end of the message, where the row cut it off */
+    private static void showFirmwareError(Activity a, String err) {
+        if (a.isFinishing() || a.isDestroyed()) return;
+        String msg = "Firmware not added: " + err;
+        android.widget.TextView t = new android.widget.TextView(a);
+        t.setText(msg); t.setTextIsSelectable(true);
+        int pad = (int) (20 * a.getResources().getDisplayMetrics().density); t.setPadding(pad, pad / 2, pad, 0);
+        new AlertDialog.Builder(a).setTitle("Firmware not added").setView(t)
+                .setNeutralButton("Copy", (d, w) -> {
+                    android.content.ClipboardManager cm = (android.content.ClipboardManager) a.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                    if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("Firmware error", msg));
+                })
+                .setPositiveButton(android.R.string.ok, null).show();
     }
 
     private static boolean triedMoreFonts;
